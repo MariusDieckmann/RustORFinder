@@ -1,0 +1,4 @@
+{
+    "start_codons": ["TTG", "CTG", "ATT", "ATC", "ATA", "ATG", "GTG"],
+    "stop_codons": ["TAA", "TAG", "TGA"]
+}

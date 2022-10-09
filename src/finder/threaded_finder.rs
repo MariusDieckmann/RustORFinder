@@ -1,115 +1,117 @@
-use std::io::Write;
+use std::collections::HashMap;
 
-use crossbeam::{
-    channel::{bounded, Receiver, Sender},
-    thread,
+use crate::{
+    datahandler::{self, trans_table::TranslationalTable},
+    models::models::{Direction, ORFPositions, ORF},
+    outwriter::outwriter::OutWriter,
 };
-use serde::{Deserialize, Serialize};
+use crossbeam::channel::{bounded, Receiver, Sender};
+use crossbeam::thread;
+
+enum NextThreadType {
+    Finder,
+    Transcriber,
+}
 
 pub struct ThreadedFinder {
     pub fw_sequence: String,
     pub rev_sequence: String,
-    pub start_codons: Vec<String>,
-    pub stop_codons: Vec<String>,
+    pub masked_areas: HashMap<u64, u64>,
+    pub translational_table: TranslationalTable,
+    pub outwriter: Box<dyn OutWriter + Send + Sync + 'static>,
     pub min_len: usize,
-}
-
-pub struct ORFPositions {
-    pub start_positions: Vec<usize>,
-    pub stop_position: usize,
-    pub strand: Direction,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ORF {
-    start_position: usize,
-    stop_position: usize,
-    sequence: String,
-    direction: Direction,
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-pub enum Direction {
-    FORWARD,
-    REVERSE,
+    pub circular: bool,
 }
 
 impl ThreadedFinder {
-    pub fn new(sequence: String) -> Self {
-        let rev_seq: String = sequence
-            .chars()
-            .rev()
-            .map(|x| match x {
-                'A' => 'T',
-                'T' => 'A',
-                'G' => 'C',
-                'C' => 'G',
-                _ => panic!("unexpected value found: {}", x),
-            })
-            .collect();
+    pub fn new(
+        sequence: String,
+        translational_table_id: u8,
+        masked_areas: HashMap<u64, u64>,
+        circular: bool,
+        outwriter: Box<dyn OutWriter + Send + Sync + 'static>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let table =
+            datahandler::trans_table::parse_translational_table(translational_table_id)?.unwrap();
+
+        let rev_seq: String = sequence.chars().rev().collect();
         let finder = ThreadedFinder {
             fw_sequence: sequence,
             rev_sequence: rev_seq,
-            start_codons: vec!["ATG".to_string()],
-            stop_codons: vec!["TAA".to_string(), "TAG".to_string(), "TGA".to_string()],
+            translational_table: table,
+            masked_areas: masked_areas,
             min_len: 30,
+            circular: circular,
+            outwriter: outwriter,
         };
 
-        return finder;
+        return Ok(finder);
     }
 
-    pub fn find_orfs(&self) {
+    pub fn run(&self, num_threads: u8) {
+        let (orf_positions_sender, orf_positions_recv) = bounded(100);
+        let (orf_sender, orf_receiver) = bounded(100);
+        let (orf_reader_start_pos_sender, orf_reader_start_pos_recv) = bounded(6);
+
+        for i in 0..3 {
+            orf_reader_start_pos_sender
+                .send((i, Direction::FORWARD))
+                .unwrap();
+            orf_reader_start_pos_sender
+                .send((i, Direction::REVERSE))
+                .unwrap();
+        }
+
+        let mut next_thread_type = NextThreadType::Finder;
+
         thread::scope(|s| {
-            let (sender, recv) = bounded(1000);
-            let (transcribe_sender, transcribe_recv) = bounded(1000);
+            let cloned_orf_receiver = orf_receiver.clone();
+            s.spawn(|_| self.outwriter.write(cloned_orf_receiver));
+            for _ in 0..num_threads - 1 {
+                match next_thread_type {
+                    NextThreadType::Finder => {
+                        let cloned_orf_reader_start_pos_recv = orf_reader_start_pos_recv.clone();
+                        let cloned_orf_positions_sender = orf_positions_sender.clone();
 
-            let mut task_handles = Vec::new();
-            let cloned_sender = sender.clone();
-            let handle = s.spawn(|_| self.orf_reader(0, Direction::FORWARD, cloned_sender));
-            task_handles.push(handle);
+                        s.spawn(|_| {
+                            self.find_orfs(
+                                cloned_orf_reader_start_pos_recv,
+                                cloned_orf_positions_sender,
+                            )
+                        });
+                        next_thread_type = NextThreadType::Transcriber;
+                    }
+                    NextThreadType::Transcriber => {
+                        let cloned_orf_positions_recv = orf_positions_recv.clone();
+                        let cloned_orf_sender = orf_sender.clone();
 
-            let cloned_sender = sender.clone();
-            let handle = s.spawn(|_| self.orf_reader(1, Direction::FORWARD, cloned_sender));
-            task_handles.push(handle);
+                        s.spawn(|_| {
+                            self.transcribe_orfs(cloned_orf_positions_recv, cloned_orf_sender)
+                        });
 
-            let cloned_sender = sender.clone();
-            let handle = s.spawn(|_| self.orf_reader(2, Direction::FORWARD, cloned_sender));
-            task_handles.push(handle);
-
-            let cloned_sender = sender.clone();
-            let handle = s.spawn(|_| self.orf_reader(0, Direction::REVERSE, cloned_sender));
-            task_handles.push(handle);
-
-            let cloned_sender = sender.clone();
-            let handle = s.spawn(|_| self.orf_reader(1, Direction::REVERSE, cloned_sender));
-            task_handles.push(handle);
-
-            let cloned_sender = sender.clone();
-            let handle = s.spawn(|_| self.orf_reader(2, Direction::REVERSE, cloned_sender));
-            task_handles.push(handle);
-
-            for _ in 0..10 {
-                let cloned_recv_0 = recv.clone();
-                let cloned_transcribe_sender = transcribe_sender.clone();
-                let transcriber =
-                    s.spawn(|_| self.transcribe_orfs(cloned_recv_0, cloned_transcribe_sender));
-                task_handles.push(transcriber);
+                        next_thread_type = NextThreadType::Finder;
+                    }
+                }
             }
 
-            let cloned_transcribe_recv = transcribe_recv.clone();
-            let writer = s.spawn(|_| self.write_out(cloned_transcribe_recv));
-            task_handles.push(writer);
-
-            drop(sender);
-            drop(recv);
-            drop(transcribe_sender);
-            drop(transcribe_recv);
-
-            for handle in task_handles {
-                handle.join().unwrap();
-            }
+            drop(orf_reader_start_pos_sender);
+            drop(orf_reader_start_pos_recv);
+            drop(orf_positions_sender);
+            drop(orf_positions_recv);
+            drop(orf_sender);
+            drop(orf_receiver);
         })
         .unwrap();
+    }
+
+    fn find_orfs(
+        &self,
+        orf_reader_start_pos_recv: Receiver<(u64, Direction)>,
+        orf_positions_sender: Sender<ORFPositions>,
+    ) {
+        for start_pos in orf_reader_start_pos_recv {
+            self.orf_reader(start_pos.0, start_pos.1, orf_positions_sender.clone());
+        }
     }
 
     fn orf_reader(&self, offset: u64, direction: Direction, sender: Sender<ORFPositions>) {
@@ -128,11 +130,11 @@ impl ThreadedFinder {
 
             let i = n as usize;
             let codon = sequence[i..i + 3].to_string();
-            if self.start_codons.contains(&codon) {
+            if self.translational_table.start_codons.contains(&codon) {
                 starts.push(n as usize);
             }
 
-            if self.stop_codons.contains(&codon) {
+            if self.translational_table.stop_codons.contains(&codon) {
                 let orf = ORFPositions {
                     start_positions: starts,
                     stop_position: n as usize,
@@ -144,10 +146,32 @@ impl ThreadedFinder {
                 sender.send(orf).unwrap();
             }
         }
+
+        if self.circular {
+            for n in (offset..sequence.len() as u64).step_by(3) {
+                if n + 2 >= sequence.len() as u64 {
+                    break;
+                }
+
+                let i = n as usize;
+                let codon = sequence[i..i + 3].to_string();
+                if self.translational_table.stop_codons.contains(&codon) {
+                    let orf = ORFPositions {
+                        start_positions: starts,
+                        stop_position: n as usize,
+                        strand: direction,
+                    };
+
+                    sender.send(orf).unwrap();
+
+                    break;
+                }
+            }
+        }
     }
 
-    fn transcribe_orfs(&self, recv: Receiver<ORFPositions>, sender: Sender<Vec<u8>>) {
-        for orf_positions in recv.iter() {
+    fn transcribe_orfs(&self, orf_positions_recv: Receiver<ORFPositions>, orf_sender: Sender<ORF>) {
+        for orf_positions in orf_positions_recv.iter() {
             let sequence: String;
             match orf_positions.strand {
                 Direction::FORWARD => sequence = self.fw_sequence.clone(),
@@ -170,31 +194,27 @@ impl ThreadedFinder {
                     direction: orf_positions.strand,
                 };
 
-                let mut orf = serde_json::to_string(&orf).unwrap().as_bytes().to_vec();
-                orf.push(10);
-                sender.send(orf).unwrap();
+                orf_sender.send(orf).unwrap();
             }
         }
-    }
-
-    fn write_out(&self, recv: Receiver<Vec<u8>>) {
-        let mut i = 0;
-        for orf in recv.iter() {
-            i = i + 1;
-            //std::io::stdout().write_all(orf.as_slice()).unwrap();
-        }
-        println!("{}", i);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, fs};
+
+    use crate::outwriter::count_writer::CountWriter;
+
     use super::ThreadedFinder;
 
     #[test]
-    fn test_orf_reader() {
-        let sequence = "ATG";
-        let finder = ThreadedFinder::new(sequence.to_string());
-        finder.find_orfs();
+    fn threaded_finder_full() {
+        let count_writer = Box::new(CountWriter {});
+        let masked_areas = HashMap::new();
+        let sequence = fs::read_to_string("resources/sequences/NC_011604.1_normal.fasta").unwrap();
+        let threaded_finder =
+            ThreadedFinder::new(sequence, 11, masked_areas, false, count_writer).unwrap();
+        threaded_finder.run(4);
     }
 }
