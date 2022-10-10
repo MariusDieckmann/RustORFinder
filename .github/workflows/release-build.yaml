@@ -81,8 +81,8 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          #strip target/${{ matrix.target }}/rustyorffinder
-          cd target/${{ matrix.target }}          
+          #strip target/${{ matrix.target }}/release/rustyorffinder
+          cd target/${{ matrix.target }}/release          
           tar czvf ../../../testmest-${{ matrix.target }}.tar.gz rustyorffinder
           cd -
       - name: Publish
