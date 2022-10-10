@@ -22,6 +22,8 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+          
+      - name: Fmt Check
         run: cargo fmt --all -- --check
 
 
