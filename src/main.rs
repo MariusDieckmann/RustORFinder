@@ -16,7 +16,7 @@ pub mod outwriter;
 struct Cli {
     /// The path to the sequence file, can be any FD type, including e.g. /dev/stdin
     #[clap(short, long, value_name = "FILE")]
-    sequence_path: PathBuf,
+    sequence_path: Option<PathBuf>,
 
     /// Input kind
     #[clap(short = 't', long, arg_enum)]
@@ -43,10 +43,12 @@ fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
-    let boxed_sequence_path = Box::new(cli.sequence_path);
+    let input_io: Box<dyn std::io::Read + Send + Sync> = match cli.sequence_path {
+        Some(path) => Box::new(File::create(path).unwrap()),
+        None => Box::new(std::io::stdin()),
+    };
 
-    let sequences =
-        datahandler::filehandler::read_input(boxed_sequence_path, cli.sequence_file_type).unwrap();
+    let sequences = datahandler::filehandler::read_input(input_io, cli.sequence_file_type).unwrap();
 
     let masked_areas = match cli.masked_gff3 {
         Some(value) => datahandler::mask_file::parse_mask_gff3_file(value).unwrap(),
