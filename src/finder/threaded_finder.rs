@@ -29,6 +29,7 @@ impl ThreadedFinder {
         translational_table_id: u8,
         masked_areas: HashMap<u64, u64>,
         circular: bool,
+        min_len: usize,
         outwriter: Box<dyn OutWriter + Send + Sync + 'static>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let table =
@@ -40,7 +41,7 @@ impl ThreadedFinder {
             rev_sequence: rev_seq,
             translational_table: table,
             masked_areas: masked_areas,
-            min_len: 30,
+            min_len: min_len,
             circular: circular,
             outwriter: outwriter,
         };
@@ -214,7 +215,7 @@ mod tests {
         let masked_areas = HashMap::new();
         let sequence = fs::read_to_string("resources/sequences/NC_011604.1_normal.fasta").unwrap();
         let threaded_finder =
-            ThreadedFinder::new(sequence, 11, masked_areas, false, count_writer).unwrap();
+            ThreadedFinder::new(sequence, 11, masked_areas, false, 30, count_writer).unwrap();
         threaded_finder.run(4);
     }
 }

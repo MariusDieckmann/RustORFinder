@@ -22,6 +22,7 @@ pub fn find_orfs(
     threads: u8,
     circular: bool,
     trans_table: u8,
+    min_len: usize,
     out_format: OutputType,
     out_target: Box<dyn std::io::Write + Send + Sync>,
 ) {
@@ -32,6 +33,7 @@ pub fn find_orfs(
         trans_table,
         masked_areas.clone(),
         circular,
+        min_len,
         writer,
     )
     .unwrap();

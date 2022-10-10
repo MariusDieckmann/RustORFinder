@@ -30,6 +30,10 @@ struct Cli {
     #[clap(short, long, value_name = "FILE")]
     masked_gff3: Option<PathBuf>,
 
+    /// Minimum size of an ORF
+    #[clap(long, default_value_t = 30)]
+    orf_min_length: usize,
+
     /// Output file format
     #[clap(short = 'h', long, arg_enum)]
     output_format: OutputType,
@@ -69,6 +73,7 @@ fn main() {
         cli.num_threads,
         false,
         11,
+        cli.orf_min_length,
         output_type,
         out_io,
     );
