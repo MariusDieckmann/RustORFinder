@@ -53,8 +53,12 @@ fn main() {
         None => HashMap::new(),
     };
 
-    let path = cli.output_file.unwrap().to_str().unwrap().to_string();
-    let output_file = Box::new(File::create(path).unwrap());
+    let output_type = cli.output_format;
+
+    let out_io: Box<dyn std::io::Write + Send + Sync> = match cli.output_file {
+        Some(path) => Box::new(File::create(path).unwrap()),
+        None => Box::new(std::io::stdout()),
+    };
 
     let sequence = sequences.get(0).unwrap();
     find_orfs(
@@ -63,8 +67,8 @@ fn main() {
         cli.num_threads,
         false,
         11,
-        cli.output_format,
-        output_file,
+        output_type,
+        out_io,
     );
 }
 
