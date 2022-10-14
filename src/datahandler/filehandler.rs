@@ -34,7 +34,7 @@ fn read_fasta(
 
     let mut sequences = Vec::new();
     for record in fasta_reader.records() {
-        let fasta_entry = record?.seq().to_vec();
+        let fasta_entry = record.unwrap().seq().to_vec();
         let sequence = String::from_utf8(fasta_entry)?;
         sequences.push(sequence);
     }

@@ -8,6 +8,11 @@ use crate::{
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::thread;
 
+const U8_A: u8 = 'A' as u8;
+const U8_C: u8 = 'C' as u8;
+const U8_T: u8 = 'T' as u8;
+const U8_G: u8 = 'G' as u8;
+
 enum NextThreadType {
     Finder,
     Transcriber,
@@ -31,14 +36,29 @@ impl ThreadedFinder {
         circular: bool,
         min_len: usize,
         outwriter: Box<dyn OutWriter + Send + Sync + 'static>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let table =
             datahandler::trans_table::parse_translational_table(translational_table_id)?.unwrap();
 
         let rev_seq: String = sequence.chars().rev().collect();
+        let mut fw_seq_bytes = sequence.as_bytes().to_vec();
+        let rev_seq_bytes = rev_seq.as_bytes().to_vec();
+        let mut rev_complement_seq_bytes =
+            ThreadedFinder::sequence_complement(rev_seq_bytes).unwrap();
+
+        if circular {
+            fw_seq_bytes = ThreadedFinder::append_two_bases(fw_seq_bytes);
+            rev_complement_seq_bytes = ThreadedFinder::append_two_bases(rev_complement_seq_bytes);
+        }
+
+        let final_fw_sequence = std::str::from_utf8(&fw_seq_bytes).unwrap().to_string();
+        let final_rev_sequence = std::str::from_utf8(&rev_complement_seq_bytes)
+            .unwrap()
+            .to_string();
+
         let finder = ThreadedFinder {
-            fw_sequence: sequence,
-            rev_sequence: rev_seq,
+            fw_sequence: final_fw_sequence,
+            rev_sequence: final_rev_sequence,
             translational_table: table,
             masked_areas: masked_areas,
             min_len: min_len,
@@ -47,6 +67,45 @@ impl ThreadedFinder {
         };
 
         return Ok(finder);
+    }
+
+    #[inline(always)]
+    fn append_two_bases(mut sequence: Vec<u8>) -> Vec<u8> {
+        let first = sequence.get(0).unwrap().clone();
+        let second = sequence.get(1).unwrap().clone();
+
+        sequence.push(first);
+        sequence.push(second);
+
+        return sequence;
+    }
+
+    #[inline(always)]
+    fn sequence_complement(
+        sequence: Vec<u8>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut complement_seq = Vec::with_capacity(sequence.len());
+        for base in sequence {
+            let complement_base = ThreadedFinder::complement(base).unwrap();
+            complement_seq.push(complement_base);
+        }
+
+        return Ok(complement_seq);
+    }
+
+    #[inline(always)]
+    fn complement(base: u8) -> Result<u8, Box<dyn std::error::Error + Send + Sync>> {
+        let complement_base = match base {
+            U8_A => U8_T,
+            U8_T => U8_A,
+            U8_C => U8_G,
+            U8_G => U8_C,
+            _ => {
+                panic!("could not match selected base")
+            }
+        };
+
+        return Ok(complement_base);
     }
 
     pub fn run(&self, num_threads: u8) {
@@ -205,7 +264,7 @@ impl ThreadedFinder {
 mod tests {
     use std::{collections::HashMap, fs};
 
-    use crate::outwriter::count_writer::CountWriter;
+    use crate::outwriter::{channel_writer::ChannelWriter, count_writer::CountWriter};
 
     use super::ThreadedFinder;
 
@@ -217,5 +276,34 @@ mod tests {
         let threaded_finder =
             ThreadedFinder::new(sequence, 11, masked_areas, false, 30, count_writer).unwrap();
         threaded_finder.run(4);
+    }
+    fn simple_orf() {
+        let (send, recv) = crossbeam::channel::unbounded();
+
+        let channel_writer = Box::new(ChannelWriter::new(send, recv.clone()));
+        let sequence = "ATGTTTATTTTTTAG".to_string();
+        let masked_areas = HashMap::new();
+        let finder =
+            ThreadedFinder::new(sequence, 11, masked_areas, false, 1, channel_writer).unwrap();
+        finder.run(4);
+        let mut orfs = Vec::new();
+        for orf in recv {
+            orfs.push(orf);
+        }
+
+        assert_eq!(orfs.get(0).unwrap().start_position, 0);
+        assert_eq!(orfs.get(1).unwrap().start_position, 2);
+        assert_eq!(orfs.get(0).unwrap().stop_position, 5);
+        assert_eq!(orfs.get(1).unwrap().stop_position, 5);
+    }
+
+    #[test]
+    fn complement_sequence() {
+        let sequence = "ACTG";
+        let sequence_bytes = sequence.as_bytes().to_vec();
+
+        let complement_seq = ThreadedFinder::sequence_complement(sequence_bytes).unwrap();
+        let expected_complement_seq = "TGAC".as_bytes().to_vec();
+        assert_eq!(complement_seq, expected_complement_seq);
     }
 }

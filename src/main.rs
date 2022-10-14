@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fs::File, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs::{File, OpenOptions},
+    path::PathBuf,
+};
 
 use clap::Parser;
 use datahandler::filehandler::SequenceFileType;
@@ -48,7 +52,11 @@ fn main() {
 
     let cli = Cli::parse();
     let input_io: Box<dyn std::io::Read + Send + Sync> = match cli.sequence_path {
-        Some(path) => Box::new(File::create(path).unwrap()),
+        Some(path) => {
+            let file: Box<dyn std::io::Read + Send + Sync> =
+                Box::new(OpenOptions::new().read(true).open(path).unwrap());
+            file
+        }
         None => Box::new(std::io::stdin()),
     };
 

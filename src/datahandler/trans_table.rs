@@ -11,7 +11,7 @@ pub struct TranslationalTable {
 
 pub fn parse_translational_table(
     trans_table_number: u8,
-) -> Result<Option<TranslationalTable>, Box<dyn std::error::Error>> {
+) -> Result<Option<TranslationalTable>, Box<dyn std::error::Error + Send + Sync>> {
     let codon_translation_table: TranslationalTable = match trans_table_number {
         11 => serde_json::from_slice(TRANS_TABLE_11)?,
         _ => return Ok(None),
